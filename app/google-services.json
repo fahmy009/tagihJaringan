@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "475246362649",
+    "project_id": "tagihjaringan",
+    "storage_bucket": "tagihjaringan.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:475246362649:android:66c6770c3d5db8e93baa88",
+        "android_client_info": {
+          "package_name": "com.fahms.tagihjaringan"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCZtBQ7hdR_Y-lQwRmLhMfyFDvcS_rACv4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

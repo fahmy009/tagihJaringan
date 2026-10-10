@@ -1,0 +1,91 @@
+BUATKAN SAYA APLIKASI ANDROID NATIVE DENGAN SPESIFIKASI BERIKUT.
+KERJAKAN SECARA BERTAHAP (STEP-BY-STEP) UNTUK MEMINIMALISIR ERROR:
+
+## TAHAP 1: SETUP PROJECT & ARSITEKTUR DASAR
+- Buat project Android Studio baru menggunakan Kotlin dan Jetpack Compose.
+- Setup arsitektur MVVM (Model-View-ViewModel) dengan Hilt/Dagger untuk Dependency Injection (opsional tapi disarankan).
+- Tambahkan dependency: 
+  - Retrofit2 & OkHttp3 (untuk HTTP Request ke REST API).
+  - Gson Converter (Parsing JSON).
+  - Kotlin Coroutines & ViewModel (Asynchronous UI & State Management).
+  - DataStore Preferences (untuk menyimpan IP Lokal, Username, Password, Profile Filter, dan URL Google Script secara lokal & aman).
+- **CRITICAL:** Buat custom `OkHttpClient` dengan custom `X509TrustManager` dan `HostnameVerifier` yang MENGABAIKAN validasi sertifikat SSL (Trust All Certs). Ini mutlak diperlukan karena router MikroTik lokal sering menggunakan *Self-Signed Certificate* atau IP lokal (tanpa domain).
+
+## TAHAP 2: INTEGRASI DUAL-API (GOOGLE SCRIPT & MIKROTIK LOCAL)
+Aplikasi ini memiliki 2 koneksi terpisah (Dual-API):
+
+**1. API Google Apps Script (Backend Database Sheets):**
+- URL Endpoint: `https://script.google.com/macros/s/[DEPLOYMENT_ID]/exec`
+- Fungsi: Murni sebagai database untuk catatan keuangan (NAMA, COMMENT, PROFILE, NOMINAL, BAYAR) dan Potongan.
+- Interface Retrofit:
+  - `GET /exec?api=true` -> Mengambil data JSON {settings: Object, customers: Array}.
+  - `POST /exec` dengan Payload `{action: "updatePayment", rowIndex: Int, isChecked: Boolean, nominal: Int}` -> Centang lunas/belum.
+  - `POST /exec` dengan Payload `{action: "updateNominal", rowIndex: Int, nominal: Int}` -> Edit harga tagihan.
+  - `POST /exec` dengan Payload `{action: "saveSettings", settings: Object}` -> Simpan daftar potongan.
+  - `POST /exec` dengan Payload `{action: "tutupBuku"}` -> Reset bulan baru.
+
+**2. API MikroTik REST API (Direct Local Connection):**
+- URL Base: `https://[IP_LOKAL_MIKROTIK]/rest/ppp/`
+- Autentikasi: Header `Authorization: Basic [Base64(User:Pass)]`.
+- Interface Retrofit:
+  - `GET secret?profile=[NAMA_PROFILE]` -> Mengambil daftar rahasia/pelanggan dari MikroTik (untuk fitur Sync).
+  - `PATCH secret/*[ID_SECRET]` dengan payload `{"disabled": "true" / "false"}` -> Mematikan/menghidupkan isolir.
+  - `GET active?name=[NAMA]` -> Mencari `.id` sesi aktif pelanggan yang sedang konek.
+  - `DELETE active/*[ID_ACTIVE]` -> Men-disconnect pelanggan secara paksa (Kick) agar langsung terkena efek isolir/nyala.
+
+## TAHAP 3: DESAIN TEMA & KOMPONEN (UI/UX)
+- Setup MaterialTheme 3. 
+- Palette Warna:
+  - Primary: Pink Accent (`#EC4899`)
+  - Secondary: Sky Blue (`#0EA5E9`)
+  - Background: `#F8FAFC`
+  - Surface/Card: `#FFFFFF`
+  - Text: `#0F172A`
+- Font wajib: "Outfit" (dari Google Fonts).
+- Buat Top App Bar bergradasi Pink ke Sky Blue dengan 4 ikon tindakan di pojok kanan:
+  1. ☁️ Sync (Cloud Sync)
+  2. 📝 Edit (Square Edit)
+  3. 👝 Keuangan (Wallet)
+  4. ⚙️ Pengaturan Sistem (Gear)
+- Buat Custom Checkbox bulat (*rounded*) yang warnanya transisi halus ke Pink saat dicentang.
+
+## TAHAP 4: LAYAR UTAMA (DASHBOARD)
+- Sediakan `OutlinedTextField` untuk Pencarian (Search) nama pelanggan secara lokal.
+- Sediakan Dropdown/Chip untuk Filter Status (Semua, Sudah Lunas, Belum Bayar).
+- Gunakan `LazyColumn` untuk merender daftar pelanggan (Compact View UI).
+- **Desain Kartu Pelanggan:**
+  - Nama pelanggan tebal (bold), detail (Modem/Profil) warna abu-abu.
+  - Harga (Nominal) dicetak tebal berwarna hijau (Rp X.XXX) di sebelah kanan, sejajar dengan Checkbox.
+  - Jika Checkbox dicentang (Lunas), background kartu berubah Pink terang transparan (`#FDF2F8`).
+  - **LOGIKA KUNCI SAAT CHECKBOX DITEKAN:**
+    - Jika Lunas (Checked): Aplikasi mengirim POST `updatePayment` ke Google Script DAN mengirim PATCH `disabled=false` ke MikroTik Local API.
+    - Jika Belum Lunas (Unchecked): Aplikasi mengirim POST `updatePayment` ke Google Script DAN mengirim PATCH `disabled=true` ke MikroTik Local API, dilanjutkan dengan GET `active` lalu DELETE `active` (Triple Combo Isolir).
+
+## TAHAP 5: STICKY BOTTOM BAR (HASIL BERSIH)
+- Buat komponen Card yang selalu `fixed` menempel di dasar layar (bottom).
+- Kalkulasi Live: Total Pemasukan Pelanggan Lunas (∑ Nominal) DIKURANGI Total Nilai Potongan Keuangan.
+- Desain: Background gradient cerah Sky Blue dengan teks putih besar "Hasil Bersih".
+
+## TAHAP 6: MODAL / BOTTOM SHEET MULTIPURPOSE
+Buat 3 jenis `ModalBottomSheet` berdasarkan ikon App Bar yang ditekan:
+1. **Modal Pengaturan Sistem (⚙️)**:
+   - Form input: IP Lokal MikroTik (misal 192.168.1.1:443), Username, Password, URL Google Script, dan "Filter Profile (Wajib)".
+   - Simpan data secara persisten ke DataStore.
+2. **Modal Keuangan (👝)**: 
+   - Menampilkan Pemasukan Kotor (uang sebelum dipotong).
+   - Menampilkan form *dynamic list* "Potongan" (Internet, Gaji, dll). Input tipe angka.
+   - Fitur "Tambah Potongan Baru".
+   - Tombol merah besar "Tutup Buku" di bagian bawah.
+3. **Modal Edit Harga (📝)**: 
+   - Tampilkan list pelanggan dengan `OutlinedTextField` khusus untuk mengubah Nominal harga mereka secara cepat (tanpa mempengaruhi status centang lunas).
+
+## TAHAP 7: LOGIKA SINKRONISASI (SYNC) & ALERT (SWEETALERT/DIALOG)
+- Setiap notifikasi (Berhasil, Gagal, Peringatan) harus menggunakan Custom Dialog (mirip SweetAlert) dengan *rounded corners* dan warna sesuai tema, jangan gunakan Toast biasa.
+- **Logika Tombol Sync (☁️):**
+  1. Validasi: Pastikan "Filter Profile" di Pengaturan tidak kosong. Jika kosong, tampilkan Error Dialog.
+  2. Dialog Konfirmasi: "Yakin ingin menarik data MikroTik dengan profil [PROFIL]?"
+  3. Loading Indicator (CircularProgressIndicator).
+  4. Ambil (GET) daftar `secret` dari MikroTik Lokal.
+  5. Bandingkan dengan daftar pelanggan di `State` Compose (dari Google Script). Temukan nama yang belum terdaftar.
+  6. Jika ada pelanggan baru, dorong pelanggan tersebut ke Google Script via POST agar disimpan di baris baru Sheets dengan nominal Rp0.
+  7. Tampilkan Success Dialog berisi rincian: "Berhasil menambahkan X pelanggan baru". Refresh data layar.
