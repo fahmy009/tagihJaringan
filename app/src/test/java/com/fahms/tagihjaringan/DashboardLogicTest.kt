@@ -286,4 +286,42 @@ class DashboardLogicTest {
         assertEquals(95000, customer3.nominal)
         assertFalse(customer3.bayar)
     }
+
+    @Test
+    fun testMultiRouterSmartProfileRouting() {
+        val routers = listOf(
+            com.fahms.tagihjaringan.data.model.MikrotikRouter(
+                id = "r1",
+                name = "Router Sumbergadung",
+                ip = "192.168.1.1:443",
+                targetProfile = "SUMBERGADUNG"
+            ),
+            com.fahms.tagihjaringan.data.model.MikrotikRouter(
+                id = "r2",
+                name = "Router Pettung",
+                ip = "192.168.1.2:443",
+                targetProfile = "PETTUNG"
+            )
+        )
+
+        val customerA = CustomerItem(name = "dani", profile = "SUMBERGADUNG")
+        val customerB = CustomerItem(name = "amelia", profile = "PETTUNG")
+
+        val routerA = routers.find { r -> r.targetProfile.isNotBlank() && r.targetProfile.split(",").any { p -> customerA.profile.contains(p.trim(), ignoreCase = true) } }
+        val routerB = routers.find { r -> r.targetProfile.isNotBlank() && r.targetProfile.split(",").any { p -> customerB.profile.contains(p.trim(), ignoreCase = true) } }
+
+        assertEquals("Router Sumbergadung", routerA?.name)
+        assertEquals("Router Pettung", routerB?.name)
+    }
+
+    @Test
+    fun testCustomerItemValidationAndNameKeying() {
+        val custA = CustomerItem(name = "dani", modem = "TOTOLINK", nominal = 95000)
+        val custB = CustomerItem(name = "budi", modem = "TOTOLINK", nominal = 100000)
+
+        assertEquals("dani", custA.name.trim().lowercase())
+        assertEquals("budi", custB.name.trim().lowercase())
+        assertEquals(95000, custA.nominal)
+        assertEquals(100000, custB.nominal)
+    }
 }

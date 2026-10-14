@@ -13,6 +13,7 @@
 * **Loading Instan (< 0,2 detik):** Aplikasi terbuka seketika tanpa ada *cold-start delay*.
 * **Live Real-Time Sync (`addSnapshotListener`):** Pilihan Lunas, setoran, dan update data langsung ter-update seketika di seluruh perangkat HP tanpa perlu di-refresh.
 * **Offline Mode Persistence:** Bekerja lancar di daerah susah sinyal dan otomatis menyinkronkan data saat kembali online.
+* **In-App Dynamic Database Config:** Pengguna/klien dapat mengunggah file `google-services.json` atau menginput kredensial Firebase langsung dari layar Login tanpa perlu merubah kode APK!
 
 ### 2. 👥 Multi-Role & Multi-Profil Wilayah
 * **ADMIN:** Memiliki wewenang penuh mengelola seluruh pelanggan dari semua profil wilayah, kelola akun user, dan pengaturan MikroTik.
@@ -33,10 +34,29 @@
 * Terhubung langsung ke **GitHub Releases API** (`fahmy009/tagihJaringan`).
 * Mendeteksi rilis `.apk` baru, menampilkan pop-up catatan rilis (*changelog*), mendownload APK di latar belakang dengan indikator persen, dan membuka *Package Installer* Android secara otomatis.
 
-### 6. 🎨 Tampilan Minimalis & Fitur Tambahan
-* **Ikon Mata Toggle Password:** Memudahkan pengisian password di layar Login.
-* **Kredit Developer:** Teks *"Developed by Muhammad Fahmy"* di layar Login dan Profil Saya.
-* **Adaptive Launcher Icon:** Ikon aplikasi modern bertema *Pink Accent* (`#EC4899`) dan *WiFi Billing*.
+---
+
+## 📜 Panduan Setup Firebase Rules Permanen (Bebas Expired 30 Hari)
+
+Agar database Firebase Firestore milik pengguna/klien **aktif permanen selamanya (tidak expired setelah 30 hari)**:
+
+1. Buka **[Firebase Console](https://console.firebase.google.com/)** $\rightarrow$ buat Project baru.
+2. Aktifkan **Cloud Firestore Database** $\rightarrow$ pilih lokasi server **`asia-southeast1 (Singapore)`**.
+3. Masuk ke tab **Rules**, ganti kodenya dengan aturan permanen berikut:
+
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
+```
+
+4. Klik **Publish**.
+5. Download file `google-services.json` $\rightarrow$ buka aplikasi **tagihJaringan** di HP $\rightarrow$ klik **⚙️ Konfigurasi Firebase Database** di layar Login $\rightarrow$ upload file JSON tersebut. **Selesai!**
 
 ---
 

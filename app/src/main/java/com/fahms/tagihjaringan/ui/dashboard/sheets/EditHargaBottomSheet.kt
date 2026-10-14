@@ -3,7 +3,7 @@ package com.fahms.tagihjaringan.ui.dashboard.sheets
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -38,18 +38,18 @@ fun EditHargaBottomSheet(
     onDismiss: () -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
-    var selectedProfileFilter by remember { mutableStateOf("Semua") }
+    var selectedProfileFilter by remember { mutableStateOf("Semua Profil") }
 
     // Unique profiles extraction
     val availableProfiles = remember(customers) {
         val profs = customers.map { it.profile.trim() }.filter { it.isNotBlank() }.distinct().sorted()
-        listOf("Semua") + profs
+        listOf("Semua Profil") + profs
     }
 
     val filteredCustomers = remember(customers, searchQuery, selectedProfileFilter) {
         customers.filter { cust ->
             val matchesSearch = searchQuery.isBlank() || cust.name.contains(searchQuery, ignoreCase = true)
-            val matchesProfile = selectedProfileFilter == "Semua" || cust.profile.equals(selectedProfileFilter, ignoreCase = true)
+            val matchesProfile = selectedProfileFilter == "Semua Profil" || cust.profile.equals(selectedProfileFilter, ignoreCase = true)
             matchesSearch && matchesProfile
         }.sortedBy { it.name.lowercase() }
     }
@@ -93,8 +93,8 @@ fun EditHargaBottomSheet(
                 shape = RoundedCornerShape(12.dp)
             )
 
-            // Profile Filter Chips for Admin
-            if (userRole.uppercase() == "ADMIN" && availableProfiles.size > 2) {
+            // Profile Filter Chips
+            if (availableProfiles.size > 2) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -108,7 +108,7 @@ fun EditHargaBottomSheet(
                             label = { Text(prof, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
                             shape = RoundedCornerShape(8.dp),
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = PinkPrimary,
+                                selectedContainerColor = SkySecondary,
                                 selectedLabelColor = Color.White
                             )
                         )
@@ -135,11 +135,11 @@ fun EditHargaBottomSheet(
                         .weight(1f, fill = false),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    itemsIndexed(filteredCustomers, key = { index, customer -> "${customer.rowIndex}_${customer.name}_$index" }) { _, customer ->
+                    items(items = filteredCustomers, key = { customer -> customer.name.trim().lowercase() }) { customerItem ->
                         EditHargaItemRow(
-                            customer = customer,
+                            customer = customerItem,
                             onSaveNominal = { newNominal ->
-                                onSaveNominal(customer, newNominal)
+                                onSaveNominal(customerItem, newNominal)
                             }
                         )
                     }
@@ -152,78 +152,84 @@ fun EditHargaBottomSheet(
 @Composable
 fun EditHargaItemRow(
     customer: CustomerItem,
-    onSaveNominal: (Int) -> Unit
+    onSaveNominal: (newNominal: Int) -> Unit
 ) {
-    fun formatDots(num: Int): String {
-        if (num == 0) return ""
-        return NumberFormat.getNumberInstance(Locale("id", "ID")).format(num)
+    fun formatRupiah(amount: Int): String {
+        val formatter = NumberFormat.getCurrencyInstance(Locale("id", "ID"))
+        return formatter.format(amount).replace(",00", "")
     }
 
-    var nominalText by remember(customer.nominal) {
-        mutableStateOf(formatDots(customer.nominal))
-    }
+    var nominalInput by remember(customer.nominal) { mutableStateOf(if (customer.nominal > 0) customer.nominal.toString() else "") }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = customer.name,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = TextDark
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (customer.profile.isNotBlank()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Profil: ${customer.profile}",
-                        style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                        text = customer.name,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${customer.profile.ifBlank { "Umum" }} • Modem: ${customer.modem.ifBlank { "-" }}",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = PinkPrimary.copy(alpha = 0.1f)
+                ) {
+                    Text(
+                        text = formatRupiah(customer.nominal),
+                        style = MaterialTheme.typography.labelMedium.copy(color = PinkPrimary, fontWeight = FontWeight.Bold),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
-
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedTextField(
-                    value = nominalText,
+                    value = nominalInput,
                     onValueChange = { input ->
-                        val cleanStr = input.replace(".", "").replace(",", "").replace(" ", "").trim()
-                        val parsed = cleanStr.toIntOrNull()
-                        nominalText = if (parsed != null && parsed > 0) NumberFormat.getNumberInstance(Locale("id", "ID")).format(parsed) else ""
+                        nominalInput = input.filter { it.isDigit() }
                     },
-                    placeholder = { Text("Rp") },
+                    label = { Text("Harga Tagihan (Rp)") },
+                    placeholder = { Text("95000") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.width(115.dp),
+                    modifier = Modifier.weight(1f),
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp)
                 )
 
                 Button(
                     onClick = {
-                        val cleanStr = nominalText.replace(".", "").replace(",", "").replace(" ", "").trim()
-                        val parsed = cleanStr.toIntOrNull() ?: 0
-                        onSaveNominal(parsed)
+                        val parsedNominal = nominalInput.toIntOrNull() ?: customer.nominal
+                        onSaveNominal(parsedNominal)
                     },
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary),
-                    contentPadding = PaddingValues(horizontal = 12.dp)
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
                 ) {
-                    Text("Simpan", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Simpan", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }

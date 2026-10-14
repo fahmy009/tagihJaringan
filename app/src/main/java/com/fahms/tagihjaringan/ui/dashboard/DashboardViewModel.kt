@@ -31,7 +31,8 @@ enum class ActiveSheet {
     EDIT_HARGA,
     SETORAN_MASUK,
     PROFILE_SAYA,
-    KELOLA_USER
+    KELOLA_USER,
+    KELOLA_ROUTER
 }
 
 data class DialogState(
@@ -53,12 +54,14 @@ data class DashboardUiState(
     val potonganList: List<PotonganItem> = emptyList(),
     val setoranList: List<SetoranItem> = emptyList(),
     val usersList: List<UserAccount> = emptyList(),
+    val routersList: List<com.fahms.tagihjaringan.data.model.MikrotikRouter> = emptyList(),
     val laporanBulananList: List<LaporanBulananItem> = emptyList(),
     val userSettings: UserSettings = UserSettings(),
     val userSession: UserSession = UserSession(),
     val isAuthenticating: Boolean = false,
     val loginError: String? = null,
     val activeSheet: ActiveSheet = ActiveSheet.NONE,
+    val hasMikrotikChanges: Boolean = false,
     val dialogState: DialogState = DialogState()
 )
 
@@ -97,8 +100,19 @@ class DashboardViewModel(
             repository.firebaseRepository.observeLaporanBulanan { liveLaporan ->
                 _uiState.update { it.copy(laporanBulananList = liveLaporan) }
             }
+            repository.firebaseRepository.observeRouters { liveRouters ->
+                _uiState.update { it.copy(routersList = liveRouters) }
+            }
 
-            executeBackgroundSync()
+            checkMikrotikSecretDiff()
+        }
+    }
+
+    fun checkMikrotikSecretDiff() {
+        viewModelScope.launch {
+            val currentCustomers = _uiState.value.customers
+            val hasChanges = repository.checkMikrotikSecretDiff(currentCustomers)
+            _uiState.update { it.copy(hasMikrotikChanges = hasChanges) }
         }
     }
 
@@ -249,6 +263,90 @@ class DashboardViewModel(
         }
     }
 
+    fun saveMikrotikRouter(router: com.fahms.tagihjaringan.data.model.MikrotikRouter) {
+        viewModelScope.launch {
+            showLoadingDialog("Menyimpan Router MikroTik...")
+            val result = repository.saveMikrotikRouter(router)
+            result.onSuccess { msg ->
+                _uiState.update {
+                    it.copy(
+                        dialogState = DialogState(
+                            isVisible = true,
+                            type = DialogType.SUCCESS,
+                            title = "Berhasil",
+                            message = msg,
+                            onConfirm = { dismissDialog() }
+                        )
+                    )
+                }
+            }.onFailure { exception ->
+                _uiState.update {
+                    it.copy(
+                        dialogState = DialogState(
+                            isVisible = true,
+                            type = DialogType.ERROR,
+                            title = "Gagal Menyimpan Router",
+                            message = exception.message ?: "Tidak dapat menyimpan konfigurasi router.",
+                            onDismiss = { dismissDialog() }
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteMikrotikRouter(router: com.fahms.tagihjaringan.data.model.MikrotikRouter) {
+        _uiState.update {
+            it.copy(
+                dialogState = DialogState(
+                    isVisible = true,
+                    type = DialogType.CONFIRMATION,
+                    title = "🌐 Konfirmasi Hapus Router",
+                    message = "Apakah Anda yakin ingin menghapus router \"${router.name}\" beserta seluruh data pelanggan wilayah ${router.targetProfile.ifBlank { "ini" }}?",
+                    confirmText = "Ya, Hapus",
+                    dismissText = "Batal",
+                    onConfirm = {
+                        dismissDialog()
+                        executeDeleteMikrotikRouter(router)
+                    },
+                    onDismiss = { dismissDialog() }
+                )
+            )
+        }
+    }
+
+    private fun executeDeleteMikrotikRouter(router: com.fahms.tagihjaringan.data.model.MikrotikRouter) {
+        viewModelScope.launch {
+            showLoadingDialog("Menghapus Router MikroTik...")
+            val result = repository.deleteMikrotikRouter(router.id, router.targetProfile, _uiState.value.customers)
+            result.onSuccess { msg ->
+                _uiState.update {
+                    it.copy(
+                        dialogState = DialogState(
+                            isVisible = true,
+                            type = DialogType.SUCCESS,
+                            title = "Berhasil Hapus Router",
+                            message = msg,
+                            onConfirm = { dismissDialog() }
+                        )
+                    )
+                }
+            }.onFailure { exception ->
+                _uiState.update {
+                    it.copy(
+                        dialogState = DialogState(
+                            isVisible = true,
+                            type = DialogType.ERROR,
+                            title = "Gagal Menghapus Router",
+                            message = exception.message ?: "Tidak dapat menghapus router.",
+                            onDismiss = { dismissDialog() }
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     fun setSearchQuery(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
     }
@@ -329,11 +427,8 @@ class DashboardViewModel(
     fun submitSetoran(mitraName: String, amount: Int, sisaPegangan: Int) {
         viewModelScope.launch {
             showLoadingDialog("Mengajukan Setoran...")
-            val session = _uiState.value.userSession
             val result = repository.submitSetoran(
-                collectorName = session.name.ifBlank { session.username },
                 mitraName = mitraName,
-                profile = session.assignedProfile,
                 amount = amount,
                 sisaPegangan = sisaPegangan
             )
@@ -436,16 +531,20 @@ class DashboardViewModel(
     }
 
     fun updateCustomerNominal(customer: CustomerItem, newNominal: Int) {
+        val cleanName = customer.name.trim()
+        val updatedCustomers = _uiState.value.customers.map {
+            if (it.name.trim().equals(cleanName, ignoreCase = true)) {
+                it.copy(nominal = newNominal)
+            } else it
+        }
+        _uiState.update { it.copy(customers = updatedCustomers) }
+
         viewModelScope.launch {
             showLoadingDialog("Memperbarui Harga...")
-            val result = repository.updateCustomerNominal(customer.rowIndex, customer.name, newNominal)
+            val result = repository.updateCustomerNominal(customer.rowIndex, cleanName, newNominal)
             result.onSuccess { successMsg ->
-                val updatedCustomers = _uiState.value.customers.map {
-                    if (it.rowIndex == customer.rowIndex) it.copy(nominal = newNominal) else it
-                }
                 _uiState.update {
                     it.copy(
-                        customers = updatedCustomers,
                         dialogState = DialogState(
                             isVisible = true,
                             type = DialogType.SUCCESS,
@@ -521,6 +620,34 @@ class DashboardViewModel(
                         )
                     )
                 }
+            }
+        }
+    }
+
+    fun saveCustomFirebaseConfig(projectId: String, apiKey: String, appId: String) {
+        viewModelScope.launch {
+            showLoadingDialog("Menghubungkan ke Database Firebase...")
+            val currentSettings = _uiState.value.userSettings
+            val newSettings = currentSettings.copy(
+                customProjectId = projectId,
+                customApiKey = apiKey,
+                customAppId = appId
+            )
+            repository.saveUserSettings(newSettings)
+            repository.firebaseRepository.rebindFirestore(projectId, apiKey, appId)
+            repository.firebaseRepository.ensureDefaultAccounts()
+            _uiState.update {
+                it.copy(
+                    userSettings = newSettings,
+                    loginError = null,
+                    dialogState = DialogState(
+                        isVisible = true,
+                        type = DialogType.SUCCESS,
+                        title = "Database Terhubung",
+                        message = "Koneksi Firebase Database ($projectId) berhasil dihubungkan!\n\nAkun Login Default:\n👑 Admin: admin / admin\n🤝 Mitra: mitra1 / 1234\n🚲 Penagih: tagih1 / 1234",
+                        onConfirm = { dismissDialog() }
+                    )
+                )
             }
         }
     }
@@ -666,19 +793,20 @@ class DashboardViewModel(
         }
     }
 
-    private fun executeSync() {
+    fun executeSync(selectedRouterId: String = "ALL") {
         viewModelScope.launch {
             showLoadingDialog("Menarik Data MikroTik...")
             val currentCustomers = _uiState.value.customers
-            val result = repository.syncWithMikrotik(currentCustomers)
+            val result = repository.syncWithMikrotik(currentCustomers, selectedRouterId)
             result.onSuccess { addedCount ->
                 val message = if (addedCount > 0) {
-                    "Berhasil menyinkronkan $addedCount pelanggan baru dari MikroTik."
+                    "Berhasil menyinkronkan $addedCount data pelanggan dari MikroTik."
                 } else {
                     "Daftar pelanggan sudah 100% tersinkron dengan MikroTik."
                 }
                 _uiState.update {
                     it.copy(
+                        hasMikrotikChanges = false,
                         dialogState = DialogState(
                             isVisible = true,
                             type = DialogType.SUCCESS,

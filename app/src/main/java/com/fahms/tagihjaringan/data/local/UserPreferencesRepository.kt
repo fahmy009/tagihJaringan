@@ -18,7 +18,10 @@ data class UserSettings(
     val mikrotikUser: String = "",
     val mikrotikPass: String = "",
     val filterProfile: String = "",
-    val defaultNominal: Int = 95000
+    val defaultNominal: Int = 95000,
+    val customProjectId: String = "",
+    val customApiKey: String = "",
+    val customAppId: String = ""
 )
 
 data class UserSession(
@@ -37,6 +40,9 @@ class UserPreferencesRepository(private val context: Context) {
         val MIKROTIK_PASS_KEY = stringPreferencesKey("mikrotik_pass")
         val FILTER_PROFILE_KEY = stringPreferencesKey("filter_profile")
         val DEFAULT_NOMINAL_KEY = intPreferencesKey("default_nominal")
+        val CUSTOM_PROJECT_ID_KEY = stringPreferencesKey("custom_project_id")
+        val CUSTOM_API_KEY_KEY = stringPreferencesKey("custom_api_key")
+        val CUSTOM_APP_ID_KEY = stringPreferencesKey("custom_app_id")
 
         val SESSION_USERNAME_KEY = stringPreferencesKey("session_username")
         val SESSION_ROLE_KEY = stringPreferencesKey("session_role")
@@ -52,7 +58,10 @@ class UserPreferencesRepository(private val context: Context) {
                 mikrotikUser = preferences[MIKROTIK_USER_KEY] ?: "",
                 mikrotikPass = preferences[MIKROTIK_PASS_KEY] ?: "",
                 filterProfile = preferences[FILTER_PROFILE_KEY] ?: "",
-                defaultNominal = preferences[DEFAULT_NOMINAL_KEY] ?: 95000
+                defaultNominal = preferences[DEFAULT_NOMINAL_KEY] ?: 95000,
+                customProjectId = preferences[CUSTOM_PROJECT_ID_KEY] ?: "",
+                customApiKey = preferences[CUSTOM_API_KEY_KEY] ?: "",
+                customAppId = preferences[CUSTOM_APP_ID_KEY] ?: ""
             )
         }
 
@@ -74,6 +83,9 @@ class UserPreferencesRepository(private val context: Context) {
             preferences[MIKROTIK_PASS_KEY] = settings.mikrotikPass
             preferences[FILTER_PROFILE_KEY] = settings.filterProfile
             preferences[DEFAULT_NOMINAL_KEY] = settings.defaultNominal
+            preferences[CUSTOM_PROJECT_ID_KEY] = settings.customProjectId
+            preferences[CUSTOM_API_KEY_KEY] = settings.customApiKey
+            preferences[CUSTOM_APP_ID_KEY] = settings.customAppId
         }
     }
 

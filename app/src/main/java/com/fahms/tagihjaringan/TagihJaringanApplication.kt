@@ -19,9 +19,9 @@ class TagihJaringanApplication : Application() {
         try {
             if (FirebaseApp.getApps(this).isEmpty()) {
                 val options = FirebaseOptions.Builder()
-                    .setApplicationId("1:475246362649:android:66c6770c3d5db8e93baa88")
-                    .setApiKey("AIzaSyCZtBQ7hdR_Y-lQwRmLhMfyFDvcS_rACv4")
                     .setProjectId("tagihjaringan")
+                    .setApiKey("AIzaSyCZtBQ7hdR_Y-lQwRmLhMfyFDvcS_rACv4")
+                    .setApplicationId("1:475246362649:android:66c6770c3d5db8e93baa88")
                     .setStorageBucket("tagihjaringan.firebasestorage.app")
                     .build()
                 FirebaseApp.initializeApp(this, options)

@@ -2,6 +2,7 @@ package com.fahms.tagihjaringan.ui.dashboard
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoveToInbox
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -31,17 +33,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.fahms.tagihjaringan.data.model.CustomerItem
 import com.fahms.tagihjaringan.ui.auth.LoginScreen
 import com.fahms.tagihjaringan.ui.components.CustomRoundedCheckbox
 import com.fahms.tagihjaringan.ui.components.SweetAlertDialog
 import com.fahms.tagihjaringan.ui.dashboard.sheets.EditHargaBottomSheet
+import com.fahms.tagihjaringan.ui.dashboard.sheets.KelolaRouterBottomSheet
 import com.fahms.tagihjaringan.ui.dashboard.sheets.KelolaUserBottomSheet
 import com.fahms.tagihjaringan.ui.dashboard.sheets.KeuanganBottomSheet
 import com.fahms.tagihjaringan.ui.dashboard.sheets.ProfileSayaBottomSheet
+import com.fahms.tagihjaringan.ui.dashboard.sheets.RemoteModemBottomSheet
 import com.fahms.tagihjaringan.ui.dashboard.sheets.SettingsBottomSheet
 import com.fahms.tagihjaringan.ui.dashboard.sheets.SetoranMasukBottomSheet
 import com.fahms.tagihjaringan.ui.dashboard.sheets.SubmitSetoranDialog
@@ -55,10 +61,15 @@ fun DashboardScreen(
     viewModel: DashboardViewModel
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
     if (!uiState.userSession.isLoggedIn) {
         LoginScreen(
             onLoginClick = { user, pass -> viewModel.login(user, pass) },
+            currentProjectId = uiState.userSettings.customProjectId,
+            currentApiKey = uiState.userSettings.customApiKey,
+            currentAppId = uiState.userSettings.customAppId,
+            onSaveFirebaseConfig = { pId, key, app -> viewModel.saveCustomFirebaseConfig(pId, key, app) },
             isLoading = uiState.isAuthenticating,
             errorMessage = uiState.loginError
         )
@@ -85,23 +96,30 @@ fun DashboardScreen(
         }
     }
 
-    var selectedAdminProfileFilter by remember { mutableStateOf("Semua") }
-    val availableAdminProfiles = remember(uiState.customers) {
-        val profs = uiState.customers.map { it.profile.trim() }.filter { it.isNotBlank() }.distinct().sorted()
-        listOf("Semua") + profs
+    var selectedProfileFilter by remember { mutableStateOf("Semua Profil") }
+
+    val availableProfiles = remember(uiState.customers, role, assignedProfileList) {
+        if (role == "ADMIN") {
+            val profs = uiState.customers.map { it.profile.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+            listOf("Semua Profil") + profs
+        } else if (role == "MITRA" && assignedProfileList.size > 1) {
+            listOf("Semua Profil") + assignedProfileList.sorted()
+        } else {
+            emptyList()
+        }
     }
 
-    val adminProfileFilteredCustomers = remember(profileCustomers, selectedAdminProfileFilter, role) {
-        if (role == "ADMIN" && selectedAdminProfileFilter != "Semua") {
-            profileCustomers.filter { cust -> cust.profile.equals(selectedAdminProfileFilter, ignoreCase = true) }
+    val activeProfileCustomers = remember(profileCustomers, selectedProfileFilter) {
+        if (selectedProfileFilter != "Semua Profil" && selectedProfileFilter.isNotBlank()) {
+            profileCustomers.filter { cust -> cust.profile.equals(selectedProfileFilter, ignoreCase = true) }
         } else {
             profileCustomers
         }
     }
 
     // Role-based customer filtering for list view
-    val filteredCustomers = remember(adminProfileFilteredCustomers, uiState.searchQuery, uiState.statusFilter, role) {
-        adminProfileFilteredCustomers.filter { customer ->
+    val filteredCustomers = remember(activeProfileCustomers, uiState.searchQuery, uiState.statusFilter, role) {
+        activeProfileCustomers.filter { customer ->
             val matchesCollector = if (role == "COLLECTOR") !customer.bayar else true
 
             val matchesQuery = if (uiState.searchQuery.isBlank()) true else {
@@ -172,6 +190,7 @@ fun DashboardScreen(
     val hasilBersih = totalPemasukanLunas - totalPotongan
 
     var showSubmitSetoranDialog by remember { mutableStateOf(false) }
+    var showRouterSyncSelectionDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -211,13 +230,25 @@ fun DashboardScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(onClick = { viewModel.promptSync() }) {
+                        IconButton(onClick = {
+                            if (uiState.routersList.isNotEmpty()) {
+                                showRouterSyncSelectionDialog = true
+                            } else {
+                                viewModel.promptSync()
+                            }
+                        }) {
                             Icon(imageVector = Icons.Default.CloudSync, contentDescription = "Sync", tint = Color.White)
                         }
 
                         if (role == "ADMIN" || role == "MITRA") {
                             IconButton(onClick = { viewModel.promptIsolirMassal() }) {
                                 Icon(imageVector = Icons.Default.Lock, contentDescription = "Isolir Massal", tint = Color.White)
+                            }
+                        }
+
+                        if (role == "ADMIN") {
+                            IconButton(onClick = { viewModel.openSheet(ActiveSheet.KELOLA_ROUTER) }) {
+                                Icon(imageVector = Icons.Default.Router, contentDescription = "Kelola Router", tint = Color.White)
                             }
                         }
 
@@ -308,7 +339,7 @@ fun DashboardScreen(
                     )
                 )
 
-                // Quick Action Cards Grid for Admin & Mitra (Clear Text Labels)
+                // Quick Action Cards Grid for Admin & Mitra (Non-Scrollable Fit)
                 if (role == "ADMIN" || role == "MITRA") {
                     Row(
                         modifier = Modifier
@@ -400,19 +431,19 @@ fun DashboardScreen(
                     }
                 }
 
-                // Admin Profile Filter Chips Bar
-                if (role == "ADMIN" && availableAdminProfiles.size > 2) {
+                // Profile Filter Chips Bar for Admin & Mitra
+                if (availableProfiles.size > 2) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        availableAdminProfiles.forEach { prof ->
+                        availableProfiles.forEach { prof ->
                             FilterChip(
-                                selected = selectedAdminProfileFilter.equals(prof, ignoreCase = true),
-                                onClick = { selectedAdminProfileFilter = prof },
-                                label = { Text(if (prof == "Semua") "Semua Profil" else prof, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                selected = selectedProfileFilter.equals(prof, ignoreCase = true),
+                                onClick = { selectedProfileFilter = prof },
+                                label = { Text(prof, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
                                 shape = RoundedCornerShape(20.dp),
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = SkySecondary,
@@ -423,26 +454,57 @@ fun DashboardScreen(
                     }
                 }
 
-                // Filter Status Chips (Semua, Sudah Lunas, Belum Bayar) strictly calculated from profileCustomers
+                // Filter Status Chips (Semua, Sudah Lunas, Belum Bayar) strictly calculated from activeProfileCustomers
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilterChipItem(
-                        text = "Semua (${adminProfileFilteredCustomers.size})",
+                        text = "Semua (${activeProfileCustomers.size})",
                         selected = uiState.statusFilter == StatusFilter.SEMUA,
                         onClick = { viewModel.setStatusFilter(StatusFilter.SEMUA) }
                     )
                     FilterChipItem(
-                        text = "Lunas (${adminProfileFilteredCustomers.count { it.bayar }})",
+                        text = "Lunas (${activeProfileCustomers.count { it.bayar }})",
                         selected = uiState.statusFilter == StatusFilter.LUNAS,
                         onClick = { viewModel.setStatusFilter(StatusFilter.LUNAS) }
                     )
                     FilterChipItem(
-                        text = "Belum (${adminProfileFilteredCustomers.count { !it.bayar }})",
+                        text = "Belum (${activeProfileCustomers.count { !it.bayar }})",
                         selected = uiState.statusFilter == StatusFilter.BELUM_BAYAR,
                         onClick = { viewModel.setStatusFilter(StatusFilter.BELUM_BAYAR) }
                     )
+                }
+
+                // MikroTik Secret Diff Alert Banner
+                if (uiState.hasMikrotikChanges) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.promptSync() },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = SkySecondary.copy(alpha = 0.15f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.CloudSync, contentDescription = "Sync", tint = SkySecondary)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "💡 Terdapat Perubahan Data Secret MikroTik",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = SkySecondary)
+                                )
+                                Text(
+                                    text = "Sistem mendeteksi adanya perubahan secret di router. Klik di sini atau tombol ☁️ Sync untuk menyinkronkan data.",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = TextDark)
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Customer List
@@ -462,13 +524,50 @@ fun DashboardScreen(
                             .weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = if (role == "COLLECTOR") "Semua tagihan di wilayah ini sudah LUNAS! 👍" else "Pelanggan tidak ditemukan.",
-                            style = MaterialTheme.typography.bodyLarge.copy(
-                                color = TextMuted,
-                                fontWeight = FontWeight.Medium
+                        if (uiState.customers.isEmpty()) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Text(
+                                        text = "⚠️ Belum Ada Data Pelanggan",
+                                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold, color = TextDark)
+                                    )
+                                    Text(
+                                        text = "Database pelanggan masih kosong.\nSilakan tekan tombol ☁️ Sync di Top Bar untuk menarik data pelanggan dari router MikroTik Anda.",
+                                        style = MaterialTheme.typography.bodyMedium.copy(color = TextMuted, textAlign = TextAlign.Center)
+                                    )
+                                    Button(
+                                        onClick = { viewModel.promptSync() },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary)
+                                    ) {
+                                        Icon(imageVector = Icons.Default.CloudSync, contentDescription = "Sync")
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("☁️ Tarik Data MikroTik", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = if (role == "COLLECTOR") "Semua tagihan di wilayah ini sudah LUNAS! 👍" else "Pelanggan tidak ditemukan.",
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    color = TextMuted,
+                                    fontWeight = FontWeight.Medium
+                                )
                             )
-                        )
+                        }
                     }
                 } else {
                     LazyColumn(
@@ -478,7 +577,7 @@ fun DashboardScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(bottom = 80.dp)
                     ) {
-                        itemsIndexed(filteredCustomers, key = { index, customer -> "${customer.rowIndex}_${customer.name}_$index" }) { _, customer ->
+                        itemsIndexed(filteredCustomers, key = { _, customer -> customer.name.trim().lowercase() }) { _, customer ->
                             CustomerCardItem(
                                 customer = customer,
                                 formatRupiah = ::formatRupiah,
@@ -526,7 +625,7 @@ fun DashboardScreen(
             KelolaUserBottomSheet(
                 users = uiState.usersList,
                 userSession = uiState.userSession,
-                existingProfiles = availableAdminProfiles.filter { it != "Semua" },
+                existingProfiles = availableProfiles.filter { it != "Semua Profil" },
                 onSaveUser = { u, p, r, prof, n, oldUser ->
                     viewModel.saveUserAccount(u, p, r, prof, n, oldUser)
                 },
@@ -581,7 +680,34 @@ fun DashboardScreen(
                 onDismiss = { viewModel.closeSheet() }
             )
         }
+        ActiveSheet.KELOLA_ROUTER -> {
+            KelolaRouterBottomSheet(
+                routers = uiState.routersList,
+                existingProfiles = availableProfiles.filter { it != "Semua Profil" },
+                onSaveRouter = { router ->
+                    viewModel.saveMikrotikRouter(router)
+                },
+                onDeleteRouter = { routerId ->
+                    val matchRouter = uiState.routersList.find { it.id == routerId }
+                    if (matchRouter != null) {
+                        viewModel.deleteMikrotikRouter(matchRouter)
+                    }
+                },
+                onDismiss = { viewModel.closeSheet() }
+            )
+        }
         ActiveSheet.NONE -> {}
+    }
+
+    if (showRouterSyncSelectionDialog) {
+        RouterSelectionSyncDialog(
+            routers = uiState.routersList,
+            onConfirmSync = { selectedRouterId ->
+                showRouterSyncSelectionDialog = false
+                viewModel.executeSync(selectedRouterId)
+            },
+            onDismiss = { showRouterSyncSelectionDialog = false }
+        )
     }
 
     // Render SweetAlert Custom Dialog
@@ -723,11 +849,11 @@ fun CustomerCardItem(
                 }
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(8.dp))
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
                     text = formatRupiah(customer.nominal),
@@ -741,6 +867,121 @@ fun CustomerCardItem(
                     checked = customer.bayar,
                     onCheckedChange = onCheckedChange
                 )
+            }
+        }
+    }
+}
+
+@Composable
+fun RouterSelectionSyncDialog(
+    routers: List<com.fahms.tagihjaringan.data.model.MikrotikRouter>,
+    onConfirmSync: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedRouterId by remember { mutableStateOf("ALL") }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "☁️ Pilih Router MikroTik untuk Sync",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                )
+
+                Text(
+                    text = "Pilih router yang ingin ditarik data pelanggan terbarunya:",
+                    style = MaterialTheme.typography.bodyMedium.copy(color = TextMuted)
+                )
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selectedRouterId = "ALL" },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (selectedRouterId == "ALL") SkySecondary.copy(alpha = 0.15f) else Color.White
+                    ),
+                    border = BorderStroke(1.dp, if (selectedRouterId == "ALL") SkySecondary else Color(0xFFE2E8F0))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        RadioButton(
+                            selected = selectedRouterId == "ALL",
+                            onClick = { selectedRouterId = "ALL" }
+                        )
+                        Column {
+                            Text("🌐 Semua Router (Semua Wilayah)", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+                            Text("Menyinkronkan seluruh router sekaligus", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted))
+                        }
+                    }
+                }
+
+                routers.forEach { router ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedRouterId = router.id },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (selectedRouterId == router.id) SkySecondary.copy(alpha = 0.15f) else Color.White
+                        ),
+                        border = BorderStroke(1.dp, if (selectedRouterId == router.id) SkySecondary else Color(0xFFE2E8F0))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RadioButton(
+                                selected = selectedRouterId == router.id,
+                                onClick = { selectedRouterId = router.id }
+                            )
+                            Column {
+                                Text(router.name.ifBlank { "Router MikroTik" }, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+                                Text("IP: ${router.ip} • Profil: ${router.targetProfile.ifBlank { "Semua" }}", style = MaterialTheme.typography.bodySmall.copy(color = TextMuted))
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Batal")
+                    }
+
+                    Button(
+                        onClick = {
+                            onConfirmSync(selectedRouterId)
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary)
+                    ) {
+                        Text("🚀 Mulai Sync", fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }

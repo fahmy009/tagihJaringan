@@ -10,10 +10,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.fahms.tagihjaringan.data.local.UserSettings
 import com.fahms.tagihjaringan.ui.theme.PinkPrimary
+import com.fahms.tagihjaringan.ui.theme.TextMuted
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -29,10 +29,6 @@ fun SettingsBottomSheet(
         return NumberFormat.getNumberInstance(Locale("id", "ID")).format(num)
     }
 
-    var ip by remember { mutableStateOf(currentSettings.mikrotikIp) }
-    var user by remember { mutableStateOf(currentSettings.mikrotikUser) }
-    var pass by remember { mutableStateOf(currentSettings.mikrotikPass) }
-    var profileFilter by remember { mutableStateOf(currentSettings.filterProfile) }
     var defaultNominalText by remember(currentSettings.defaultNominal) {
         mutableStateOf(formatDots(currentSettings.defaultNominal))
     }
@@ -51,51 +47,32 @@ fun SettingsBottomSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "⚙️ Pengaturan MikroTik Router",
+                text = "⚙️ Pengaturan Tagihan & Router",
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Bold
                 )
             )
 
-            OutlinedTextField(
-                value = ip,
-                onValueChange = { ip = it },
-                label = { Text("IP / Host Lokal MikroTik") },
-                placeholder = { Text("http://103.189.119.87:8089 atau 192.168.1.1") },
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp)
-            )
-
-            OutlinedTextField(
-                value = user,
-                onValueChange = { user = it },
-                label = { Text("Username MikroTik") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp)
-            )
-
-            OutlinedTextField(
-                value = pass,
-                onValueChange = { pass = it },
-                label = { Text("Password MikroTik") },
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp)
-            )
-
-            OutlinedTextField(
-                value = profileFilter,
-                onValueChange = { profileFilter = it },
-                label = { Text("Default Filter Profile (Opsional)") },
-                placeholder = { Text("misal: SUMBERGADUNG") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp)
-            )
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp)
+                ) {
+                    Text(
+                        text = "🌐 Pengelolaan Router MikroTik",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "Seluruh IP, Username, dan Password router MikroTik kini dikelola terpusat pada tombol 🌐 Kelola Router di Top Bar.",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = TextMuted)
+                    )
+                }
+            }
 
             OutlinedTextField(
                 value = defaultNominalText,
@@ -104,7 +81,7 @@ fun SettingsBottomSheet(
                     val parsed = cleanStr.toIntOrNull()
                     defaultNominalText = if (parsed != null && parsed > 0) NumberFormat.getNumberInstance(Locale("id", "ID")).format(parsed) else ""
                 },
-                label = { Text("Nominal Default Tagihan (Rp)") },
+                label = { Text("Nominal Default Tagihan Pelanggan Baru (Rp)") },
                 placeholder = { Text("95.000") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth(),
@@ -118,14 +95,9 @@ fun SettingsBottomSheet(
                 onClick = {
                     val cleanText = defaultNominalText.replace(".", "").replace(",", "").replace(" ", "").trim()
                     val parsedNominal = cleanText.toIntOrNull() ?: 95000
+
                     onSaveSettings(
-                        UserSettings(
-                            mikrotikIp = ip.trim(),
-                            mikrotikUser = user.trim(),
-                            mikrotikPass = pass.trim(),
-                            filterProfile = profileFilter.trim(),
-                            defaultNominal = parsedNominal
-                        )
+                        currentSettings.copy(defaultNominal = parsedNominal)
                     )
                 },
                 modifier = Modifier.fillMaxWidth(),

@@ -40,24 +40,13 @@ fun KelolaUserBottomSheet(
     onDeleteUser: (username: String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val role = userSession.role.uppercase()
-    val assignedProfile = userSession.assignedProfile.trim()
-    val allowedProfiles = remember(assignedProfile) {
-        assignedProfile.split(",").map { it.trim() }.filter { it.isNotBlank() }
-    }
-
-    val filteredUsers = remember(users, role, allowedProfiles) {
-        if (role != "ADMIN" && allowedProfiles.isNotEmpty()) {
-            users.filter { user ->
-                allowedProfiles.any { prof -> user.assignedProfile.equals(prof, ignoreCase = true) }
-            }
-        } else {
-            users
-        }
-    }
-
     var selectedUserForEdit by remember { mutableStateOf<UserAccount?>(null) }
     var showUserFormDialog by remember { mutableStateOf(false) }
+
+    val role = userSession.role.uppercase()
+    val allowedProfiles = remember(userSession.assignedProfile) {
+        userSession.assignedProfile.split(",").map { it.trim() }.filter { it.isNotBlank() }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -77,27 +66,29 @@ fun KelolaUserBottomSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "👥 Kelola User & Akun",
+                    text = "👥 Kelola User Account",
                     style = MaterialTheme.typography.titleLarge.copy(
                         fontWeight = FontWeight.Bold
                     )
                 )
 
-                Button(
-                    onClick = {
-                        selectedUserForEdit = null
-                        showUserFormDialog = true
-                    },
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary)
-                ) {
-                    Icon(imageVector = Icons.Default.Add, contentDescription = "Tambah")
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Tambah User")
+                if (role == "ADMIN" || role == "MITRA") {
+                    Button(
+                        onClick = {
+                            selectedUserForEdit = null
+                            showUserFormDialog = true
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary)
+                    ) {
+                        Icon(imageVector = Icons.Default.Add, contentDescription = "Tambah")
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Tambah User")
+                    }
                 }
             }
 
-            if (filteredUsers.isEmpty()) {
+            if (users.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -105,7 +96,7 @@ fun KelolaUserBottomSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Belum ada user registered.",
+                        text = "Belum ada user terdaftar. Silakan tambahkan user.",
                         style = MaterialTheme.typography.bodyLarge.copy(color = TextMuted)
                     )
                 }
@@ -116,7 +107,7 @@ fun KelolaUserBottomSheet(
                         .weight(1f, fill = false),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(filteredUsers, key = { it.username }) { userItem ->
+                    items(users, key = { it.username }) { userItem ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
@@ -129,10 +120,13 @@ fun KelolaUserBottomSheet(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Text(
                                             text = userItem.name.ifBlank { userItem.username },
@@ -217,7 +211,6 @@ fun UserFormDialog(
     var selectedRole by remember {
         mutableStateOf(if (currentUserRole != "ADMIN") "COLLECTOR" else (userForEdit?.role ?: "COLLECTOR"))
     }
-
     var selectedProfileInput by remember {
         mutableStateOf(
             userForEdit?.assignedProfile?.ifBlank { allowedProfiles.firstOrNull() ?: "" }
@@ -325,38 +318,6 @@ fun UserFormDialog(
                             }
                         }
                     }
-                } else {
-                    OutlinedTextField(
-                        value = "COLLECTOR (Tukang Tagih)",
-                        onValueChange = {},
-                        label = { Text("Role") },
-                        enabled = false,
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(10.dp)
-                    )
-
-                    // Profile selection selector for Mitra with single or multiple allowed profiles
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            text = "Profil Wilayah Tugas Penagih:",
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            allowedProfiles.forEach { prof ->
-                                FilterChip(
-                                    selected = selectedProfileInput.equals(prof, ignoreCase = true),
-                                    onClick = { selectedProfileInput = prof },
-                                    label = { Text(prof, fontSize = 12.sp, fontWeight = FontWeight.Bold) },
-                                    shape = RoundedCornerShape(8.dp)
-                                )
-                            }
-                        }
-                    }
                 }
 
                 Row(
@@ -374,10 +335,17 @@ fun UserFormDialog(
                     Button(
                         onClick = {
                             if (username.isNotBlank()) {
-                                onSave(username.trim(), password.trim(), selectedRole.trim(), selectedProfileInput.trim(), name.trim(), userForEdit?.username ?: "")
+                                onSave(
+                                    username.trim(),
+                                    password.trim(),
+                                    selectedRole,
+                                    selectedProfileInput.trim(),
+                                    name.trim().ifBlank { username.trim() },
+                                    userForEdit?.username ?: ""
+                                )
                             }
                         },
-                        enabled = username.isNotBlank() && (isEditing || password.isNotBlank()),
+                        enabled = username.isNotBlank(),
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary)

@@ -1,75 +1,107 @@
 package com.fahms.tagihjaringan.data.remote
 
+import com.fahms.tagihjaringan.data.local.UserSession
 import com.fahms.tagihjaringan.data.model.*
-import com.google.firebase.firestore.CollectionReference
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.tasks.await
 
 class FirebaseRepository {
 
-    private val firestore: FirebaseFirestore? by lazy {
-        try {
-            val db = FirebaseFirestore.getInstance()
-            db.firestoreSettings = FirebaseFirestoreSettings.Builder()
-                .setPersistenceEnabled(true)
-                .build()
-            db
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
+    private var firestore: FirebaseFirestore? = null
 
-    // Collection References
-    private val customersRef: CollectionReference? get() = firestore?.collection("customers")
-    private val usersRef: CollectionReference? get() = firestore?.collection("users")
-    private val setoranRef: CollectionReference? get() = firestore?.collection("setoran")
-    private val settingsRef: CollectionReference? get() = firestore?.collection("settings")
-    private val laporanRef: CollectionReference? get() = firestore?.collection("laporan_bulanan")
-
-    // Listeners
     private var customersListener: ListenerRegistration? = null
     private var usersListener: ListenerRegistration? = null
     private var setoranListener: ListenerRegistration? = null
     private var settingsListener: ListenerRegistration? = null
     private var laporanListener: ListenerRegistration? = null
+    private var routersListener: ListenerRegistration? = null
+
+    init {
+        try {
+            val app = FirebaseApp.getInstance()
+            firestore = FirebaseFirestore.getInstance(app)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun rebindFirestore(projectId: String, apiKey: String, appId: String): Boolean {
+        return try {
+            val options = FirebaseOptions.Builder()
+                .setProjectId(projectId)
+                .setApiKey(apiKey)
+                .setApplicationId(appId)
+                .build()
+
+            val existingApp = try { FirebaseApp.getInstance("DynamicApp") } catch (e: Exception) { null }
+            val app = if (existingApp != null) {
+                existingApp.delete()
+                FirebaseApp.initializeApp(FirebaseApp.getInstance().applicationContext, options, "DynamicApp")
+            } else {
+                FirebaseApp.initializeApp(FirebaseApp.getInstance().applicationContext, options, "DynamicApp")
+            }
+
+            firestore = FirebaseFirestore.getInstance(app)
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private val customersRef get() = firestore?.collection("customers")
+    private val usersRef get() = firestore?.collection("users")
+    private val setoranRef get() = firestore?.collection("setoran")
+    private val settingsRef get() = firestore?.collection("settings")
+    private val laporanRef get() = firestore?.collection("laporan")
+    private val routersRef get() = firestore?.collection("routers")
 
     suspend fun ensureDefaultAccounts() {
         val ref = usersRef ?: return
         try {
-            val snapshot = ref.get().await()
-            if (snapshot.isEmpty) {
+            val adminDoc = ref.document("admin").get().await()
+            if (!adminDoc.exists()) {
                 val batch = firestore?.batch() ?: return
-                
+
                 val adminRef = ref.document("admin")
                 batch.set(adminRef, mapOf(
                     "username" to "admin",
                     "password" to "admin",
                     "role" to "ADMIN",
                     "assignedProfile" to "",
-                    "name" to "Administrator"
+                    "name" to "Administrator",
+                    "remoteJalur" to "remote_client_1"
                 ))
 
-                val mitraRef = ref.document("mitra1")
-                batch.set(mitraRef, mapOf(
-                    "username" to "mitra1",
-                    "password" to "1234",
-                    "role" to "MITRA",
-                    "assignedProfile" to "SUMBERGADUNG",
-                    "name" to "Mitra Sumbergadung"
-                ))
+                val mitraDoc = ref.document("mitra1").get().await()
+                if (!mitraDoc.exists()) {
+                    val mitraRef = ref.document("mitra1")
+                    batch.set(mitraRef, mapOf(
+                        "username" to "mitra1",
+                        "password" to "1234",
+                        "role" to "MITRA",
+                        "assignedProfile" to "SUMBERGADUNG",
+                        "name" to "Mitra Sumbergadung",
+                        "remoteJalur" to "remote_client_1"
+                    ))
+                }
 
-                val tagihRef = ref.document("tagih1")
-                batch.set(tagihRef, mapOf(
-                    "username" to "tagih1",
-                    "password" to "1234",
-                    "role" to "COLLECTOR",
-                    "assignedProfile" to "SUMBERGADUNG",
-                    "name" to "Tukang Tagih A"
-                ))
+                val tagihDoc = ref.document("tagih1").get().await()
+                if (!tagihDoc.exists()) {
+                    val tagihRef = ref.document("tagih1")
+                    batch.set(tagihRef, mapOf(
+                        "username" to "tagih1",
+                        "password" to "1234",
+                        "role" to "COLLECTOR",
+                        "assignedProfile" to "SUMBERGADUNG",
+                        "name" to "Tukang Tagih A",
+                        "remoteJalur" to "remote_client_1"
+                    ))
+                }
 
                 batch.commit().await()
             }
@@ -107,7 +139,7 @@ class FirebaseRepository {
                         lat = lat,
                         lng = lng
                     )
-                }
+                }.distinctBy { it.name.trim() }
                 onData(list)
             }
         }
@@ -211,9 +243,72 @@ class FirebaseRepository {
         }
     }
 
+    fun observeRouters(onData: (List<MikrotikRouter>) -> Unit) {
+        val ref = routersRef ?: return
+        routersListener?.remove()
+        routersListener = ref.addSnapshotListener { snapshot, _ ->
+            if (snapshot != null) {
+                val list = snapshot.documents.mapNotNull { doc ->
+                    MikrotikRouter(
+                        id = doc.getString("id") ?: doc.id,
+                        name = doc.getString("name") ?: "",
+                        ip = doc.getString("ip") ?: "",
+                        user = doc.getString("user") ?: "",
+                        pass = doc.getString("pass") ?: "",
+                        targetProfile = doc.getString("targetProfile") ?: "",
+                        version = doc.getString("version") ?: "v7",
+                        apiPort = doc.getLong("apiPort")?.toInt() ?: 8728
+                    )
+                }
+                onData(list)
+            }
+        }
+    }
+
+    suspend fun getRoutersOnce(): List<MikrotikRouter> {
+        val ref = routersRef ?: return emptyList()
+        return try {
+            val snapshot = ref.get().await()
+            snapshot.documents.mapNotNull { doc ->
+                MikrotikRouter(
+                    id = doc.getString("id") ?: doc.id,
+                    name = doc.getString("name") ?: "",
+                    ip = doc.getString("ip") ?: "",
+                    user = doc.getString("user") ?: "",
+                    pass = doc.getString("pass") ?: "",
+                    targetProfile = doc.getString("targetProfile") ?: "",
+                    version = doc.getString("version") ?: "v7",
+                    apiPort = doc.getLong("apiPort")?.toInt() ?: 8728
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun saveMikrotikRouter(router: MikrotikRouter) {
+        val ref = routersRef ?: return
+        val data = mapOf(
+            "id" to router.id,
+            "name" to router.name,
+            "ip" to router.ip,
+            "user" to router.user,
+            "pass" to router.pass,
+            "targetProfile" to router.targetProfile,
+            "version" to router.version,
+            "apiPort" to router.apiPort
+        )
+        ref.document(router.id).set(data, SetOptions.merge()).await()
+    }
+
+    suspend fun deleteMikrotikRouter(routerId: String) {
+        val ref = routersRef ?: return
+        ref.document(routerId).delete().await()
+    }
+
     suspend fun updatePaymentStatus(rowIndex: Int, customerName: String, customerProfile: String, isChecked: Boolean, nominal: Int, collectedBy: String) {
         val ref = customersRef ?: return
-        val docId = customerName.ifBlank { rowIndex.toString() }
+        val docId = customerName.trim().ifBlank { rowIndex.toString() }
         val data = mapOf(
             "name" to customerName,
             "profile" to customerProfile,
@@ -227,7 +322,7 @@ class FirebaseRepository {
 
     suspend fun updateCustomerLocation(customerName: String, lat: Double, lng: Double) {
         val ref = customersRef ?: return
-        val docId = customerName.ifBlank { System.currentTimeMillis().toString() }
+        val docId = customerName.trim().ifBlank { System.currentTimeMillis().toString() }
         val data = mapOf(
             "lat" to lat,
             "lng" to lng
@@ -237,8 +332,14 @@ class FirebaseRepository {
 
     suspend fun updateCustomerNominal(rowIndex: Int, customerName: String, newNominal: Int) {
         val ref = customersRef ?: return
-        val docId = customerName.ifBlank { rowIndex.toString() }
+        val docId = customerName.trim().ifBlank { rowIndex.toString() }
         ref.document(docId).set(mapOf("nominal" to newNominal, "rowIndex" to rowIndex), SetOptions.merge()).await()
+    }
+
+    suspend fun updateCustomerRemotePort(rowIndex: Int, customerName: String, remotePort: Int) {
+        val ref = customersRef ?: return
+        val docId = customerName.trim().ifBlank { rowIndex.toString() }
+        ref.document(docId).set(mapOf("remotePort" to remotePort, "rowIndex" to rowIndex), SetOptions.merge()).await()
     }
 
     suspend fun saveFinancialSettings(potonganList: List<PotonganItem>) {
@@ -285,13 +386,25 @@ class FirebaseRepository {
         val batch = db.batch()
         var hasUpdates = false
 
-        for ((idx, c) in newCustomers.withIndex()) {
-            val docId = c.name.ifBlank { "cust_${System.currentTimeMillis()}_$idx" }
-            val docRef = ref.document(docId)
-            val docSnap = docRef.get().await()
+        val existingDocsMap = try {
+            val docs = ref.get().await().documents
+            val map = mutableMapOf<String, com.google.firebase.firestore.DocumentSnapshot>()
+            for (doc in docs) {
+                map[doc.id.trim()] = doc
+                map[doc.id.trim().lowercase()] = doc
+            }
+            map
+        } catch (e: Exception) {
+            emptyMap()
+        }
 
-            if (docSnap.exists()) {
-                // Update comment, modem, and profile while preserving bayar, collectedBy, custom nominal, and GPS!
+        for ((idx, c) in newCustomers.withIndex()) {
+            val exactName = c.name.trim()
+            val docId = exactName.ifBlank { "cust_${System.currentTimeMillis()}_$idx" }
+            val docRef = ref.document(docId)
+            val docSnap = existingDocsMap[exactName] ?: existingDocsMap[exactName.lowercase()]
+
+            if (docSnap != null && docSnap.exists()) {
                 val updateData = mutableMapOf<String, Any>(
                     "name" to c.name,
                     "profile" to c.profile,
@@ -304,7 +417,6 @@ class FirebaseRepository {
                 }
                 batch.set(docRef, updateData, SetOptions.merge())
             } else {
-                // Brand new customer: initialize default fields
                 val newCustomerData = mapOf(
                     "name" to c.name,
                     "profile" to c.profile,
@@ -328,17 +440,54 @@ class FirebaseRepository {
     suspend fun deleteCustomers(names: List<String>) {
         val db = firestore ?: return
         val ref = customersRef ?: return
+        if (names.isEmpty()) return
+
         val batch = db.batch()
         names.forEach { name ->
             if (name.isNotBlank()) {
-                batch.delete(ref.document(name))
+                ref.document(name.trim()).delete()
+                ref.document(name.trim().lowercase()).delete()
             }
         }
         batch.commit().await()
     }
 
-    suspend fun authenticateUser(username: String, pass: String): UserAccount? {
-        ensureDefaultAccounts()
+    suspend fun submitSetoran(mitraName: String, amount: Int, sisaPegangan: Int, collectorUser: UserSession) {
+        val ref = setoranRef ?: return
+        val id = "setor_${System.currentTimeMillis()}"
+        val dateStr = java.text.SimpleDateFormat("dd-MM-yyyy HH:mm:ss", java.util.Locale("id", "ID")).format(java.util.Date())
+
+        val setoranData = mapOf(
+            "id" to id,
+            "date" to dateStr,
+            "collectorName" to (collectorUser.name.ifBlank { collectorUser.username }),
+            "mitraName" to mitraName,
+            "profile" to collectorUser.assignedProfile,
+            "amount" to amount,
+            "sisaPegangan" to sisaPegangan,
+            "amountReceived" to amount,
+            "selisihHutang" to 0,
+            "status" to "PENDING"
+        )
+        ref.document(id).set(setoranData).await()
+    }
+
+    suspend fun verifySetoran(setoranId: String, amountReceived: Int, selisihHutang: Int) {
+        val ref = setoranRef ?: return
+        val data = mapOf(
+            "status" to "VERIFIED",
+            "amountReceived" to amountReceived,
+            "selisihHutang" to selisihHutang
+        )
+        ref.document(setoranId).set(data, SetOptions.merge()).await()
+    }
+
+    suspend fun deleteSetoran(setoranId: String) {
+        val ref = setoranRef ?: return
+        ref.document(setoranId).delete().await()
+    }
+
+    suspend fun login(username: String, pass: String): UserAccount? {
         val ref = usersRef ?: return null
         val doc = ref.document(username.trim().lowercase()).get().await()
         if (doc.exists()) {
@@ -355,12 +504,22 @@ class FirebaseRepository {
         return null
     }
 
+    suspend fun updateUserProfile(username: String, newPass: String, newName: String) {
+        val ref = usersRef ?: return
+        val docRef = ref.document(username.trim().lowercase())
+        val data = mutableMapOf<String, Any>()
+        if (newPass.isNotBlank()) data["password"] = newPass.trim()
+        if (newName.isNotBlank()) data["name"] = newName.trim()
+        if (data.isNotEmpty()) {
+            docRef.set(data, SetOptions.merge()).await()
+        }
+    }
+
     suspend fun saveUserAccount(username: String, pass: String, role: String, profile: String, name: String, oldUsername: String = "") {
         val ref = usersRef ?: return
         val newDocId = username.trim().lowercase()
         val oldDocId = oldUsername.trim().lowercase()
 
-        // If renaming username, migration: copy data to new document and delete old document
         if (oldDocId.isNotBlank() && oldDocId != newDocId) {
             val oldDoc = ref.document(oldDocId).get().await()
             val existingPass = oldDoc.getString("password") ?: ""
@@ -392,47 +551,5 @@ class FirebaseRepository {
     suspend fun deleteUserAccount(username: String) {
         val ref = usersRef ?: return
         ref.document(username.trim().lowercase()).delete().await()
-    }
-
-    suspend fun submitSetoran(collectorName: String, mitraName: String, profile: String, amount: Int, sisaPegangan: Int) {
-        val ref = setoranRef ?: return
-        val id = "setor_${System.currentTimeMillis()}"
-        val dateStr = java.text.SimpleDateFormat("dd-MM-yyyy HH:mm:ss", java.util.Locale("id", "ID")).format(java.util.Date())
-        val data = mapOf(
-            "id" to id,
-            "date" to dateStr,
-            "collectorName" to collectorName,
-            "mitraName" to mitraName,
-            "profile" to profile,
-            "amount" to amount,
-            "sisaPegangan" to sisaPegangan,
-            "status" to "PENDING",
-            "amountReceived" to amount,
-            "selisihHutang" to 0
-        )
-        ref.document(id).set(data).await()
-    }
-
-    suspend fun verifySetoran(setoranId: String, amountReceived: Int, selisihHutang: Int) {
-        val ref = setoranRef ?: return
-        val data = mapOf(
-            "status" to "VERIFIED",
-            "amountReceived" to amountReceived,
-            "selisihHutang" to selisihHutang
-        )
-        ref.document(setoranId).set(data, SetOptions.merge()).await()
-    }
-
-    suspend fun deleteSetoran(setoranId: String) {
-        val ref = setoranRef ?: return
-        ref.document(setoranId).delete().await()
-    }
-
-    fun clearListeners() {
-        customersListener?.remove()
-        usersListener?.remove()
-        setoranListener?.remove()
-        settingsListener?.remove()
-        laporanListener?.remove()
     }
 }

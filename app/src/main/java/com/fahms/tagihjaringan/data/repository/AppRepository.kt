@@ -11,7 +11,11 @@ import com.fahms.tagihjaringan.data.remote.FlexibleIntAdapter
 import com.fahms.tagihjaringan.data.remote.MikrotikApi
 import com.fahms.tagihjaringan.data.remote.UnsafeOkHttpClient
 import com.google.gson.GsonBuilder
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 
@@ -22,6 +26,7 @@ class AppRepository(
     val firebaseRepository = FirebaseRepository()
     private val unsafeOkHttpClient = UnsafeOkHttpClient.getUnsafeOkHttpClient()
     val gitHubUpdateManager by lazy { com.fahms.tagihjaringan.data.remote.GitHubUpdateManager(unsafeOkHttpClient) }
+    val mikrotikv6SocketApi by lazy { com.fahms.tagihjaringan.data.remote.Mikrotikv6SocketApi() }
 
     private val gson = GsonBuilder()
         .registerTypeAdapter(Boolean::class.java, FlexibleBooleanAdapter())
@@ -65,13 +70,17 @@ class AppRepository(
 
     suspend fun loginUser(username: String, pass: String): Result<UserSession> {
         return try {
-            val firebaseUser = firebaseRepository.authenticateUser(username, pass)
-            if (firebaseUser != null) {
+            val settings = getUserSettings()
+            if (settings.customProjectId.isNotBlank() && settings.customApiKey.isNotBlank() && settings.customAppId.isNotBlank()) {
+                firebaseRepository.rebindFirestore(settings.customProjectId, settings.customApiKey, settings.customAppId)
+            }
+            val user = firebaseRepository.login(username, pass)
+            if (user != null) {
                 val session = UserSession(
-                    username = firebaseUser.username,
-                    role = firebaseUser.role,
-                    assignedProfile = firebaseUser.assignedProfile,
-                    name = firebaseUser.name,
+                    username = user.username,
+                    role = user.role,
+                    assignedProfile = user.assignedProfile,
+                    name = user.name,
                     isLoggedIn = true
                 )
                 saveUserSession(session)
@@ -85,14 +94,13 @@ class AppRepository(
     }
 
     suspend fun submitSetoran(
-        collectorName: String,
         mitraName: String,
-        profile: String,
         amount: Int,
         sisaPegangan: Int
     ): Result<String> {
         return try {
-            firebaseRepository.submitSetoran(collectorName, mitraName, profile, amount, sisaPegangan)
+            val session = getUserSession()
+            firebaseRepository.submitSetoran(mitraName, amount, sisaPegangan, session)
             Result.success("Setoran sebesar Rp${amount} berhasil diajukan!")
         } catch (e: Exception) {
             Result.failure(e)
@@ -167,18 +175,50 @@ class AppRepository(
         }
     }
 
-    private fun buildMikrotikBaseUrl(ip: String): String {
+    suspend fun saveMikrotikRouter(router: MikrotikRouter): Result<String> {
+        return try {
+            firebaseRepository.saveMikrotikRouter(router)
+            Result.success("Router '${router.name}' berhasil disimpan!")
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteMikrotikRouter(routerId: String, targetProfile: String = "", currentCustomers: List<CustomerItem> = emptyList()): Result<String> {
+        return try {
+            firebaseRepository.deleteMikrotikRouter(routerId)
+            if (targetProfile.isNotBlank() && currentCustomers.isNotEmpty()) {
+                val profiles = targetProfile.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() }
+                val customersInProfile = currentCustomers.filter { cust ->
+                    profiles.any { p -> cust.profile.trim().equals(p, ignoreCase = true) }
+                }
+                if (customersInProfile.isNotEmpty()) {
+                    firebaseRepository.deleteCustomers(customersInProfile.map { it.name })
+                }
+            }
+            Result.success("Router berhasil dihapus.")
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun buildMikrotikBaseUrl(ip: String, port: Int = 0): String {
         var cleanIp = ip.trim()
-        if (!cleanIp.startsWith("http://") && !cleanIp.startsWith("https://")) {
-            cleanIp = "https://$cleanIp"
+        val scheme = if (cleanIp.startsWith("https://")) "https://" else if (cleanIp.startsWith("http://")) "http://" else "http://"
+        var hostAndPort = cleanIp.replace("https://", "").replace("http://", "").split("/")[0].trim()
+
+        if (!hostAndPort.contains(":") && port > 0) {
+            hostAndPort = "$hostAndPort:$port"
         }
-        if (!cleanIp.endsWith("/")) {
-            cleanIp = "$cleanIp/"
+
+        var fullUrl = "$scheme$hostAndPort"
+        if (!fullUrl.endsWith("/")) {
+            fullUrl = "$fullUrl/"
         }
-        if (!cleanIp.contains("/rest/ppp/")) {
-            cleanIp = "${cleanIp}rest/ppp/"
+        if (!fullUrl.contains("/rest/ppp/")) {
+            fullUrl = "${fullUrl}rest/ppp/"
         }
-        return cleanIp
+        return fullUrl
     }
 
     private fun buildBasicAuth(user: String, pass: String): String {
@@ -187,9 +227,12 @@ class AppRepository(
         return "Basic $base64"
     }
 
+    suspend fun getConfiguredRouters(): List<MikrotikRouter> {
+        return firebaseRepository.getRoutersOnce()
+    }
+
     suspend fun toggleCustomerPayment(customer: CustomerItem, isChecked: Boolean): Result<String> {
         return try {
-            val settings = getUserSettings()
             val session = getUserSession()
             val currentCollectorName = if (isChecked) (session.name.ifBlank { session.username }) else ""
 
@@ -203,42 +246,62 @@ class AppRepository(
                 collectedBy = currentCollectorName
             )
 
-            // 2. Update MikroTik status if credentials and IP are configured
-            if (settings.mikrotikIp.isNotBlank() && settings.mikrotikUser.isNotBlank()) {
-                val baseUrl = buildMikrotikBaseUrl(settings.mikrotikIp)
-                val authHeader = buildBasicAuth(settings.mikrotikUser, settings.mikrotikPass)
+            // 2. Multi-Router Smart Dispatching
+            val routers = getConfiguredRouters()
+            val matchingRouter = routers.find { r ->
+                r.targetProfile.isNotBlank() && r.targetProfile.split(",").any { p -> customer.profile.contains(p.trim(), ignoreCase = true) }
+            } ?: routers.firstOrNull()
 
-                val secretUrl = "${baseUrl}secret"
-                val queryProfile = customer.profile.ifBlank { settings.filterProfile }.ifBlank { null }
-                var secretsResp = mikrotikApi.getSecrets(secretUrl, authHeader, queryProfile)
-                var secrets = if (secretsResp.isSuccessful) secretsResp.body() ?: emptyList() else emptyList()
+            if (matchingRouter != null && matchingRouter.ip.isNotBlank()) {
+                if (matchingRouter.version == "v6") {
+                    val secrets = mikrotikv6SocketApi.getSecrets(matchingRouter.ip, matchingRouter.apiPort, matchingRouter.user, matchingRouter.pass, customer.profile)
+                    val matchSecret = secrets.find { it.name.equals(customer.name, ignoreCase = true) }
+                    val secretId = matchSecret?.id ?: customer.name
+                    mikrotikv6SocketApi.patchSecret(matchingRouter.ip, matchingRouter.apiPort, matchingRouter.user, matchingRouter.pass, secretId, !isChecked)
 
-                var matchSecret = secrets.find { it.name.equals(customer.name, ignoreCase = true) }
-                if (matchSecret == null) {
-                    val fallbackResp = mikrotikApi.getSecrets(secretUrl, authHeader, null)
-                    if (fallbackResp.isSuccessful) {
-                        val fallbackSecrets = fallbackResp.body() ?: emptyList()
-                        matchSecret = fallbackSecrets.find { it.name.equals(customer.name, ignoreCase = true) }
-                    }
-                }
-
-                val secretId = matchSecret?.id
-                if (secretId != null) {
-                    val patchUrl = "${baseUrl}secret/$secretId"
-                    val disabledValue = if (isChecked) "false" else "true"
-                    mikrotikApi.patchSecret(patchUrl, authHeader, mapOf("disabled" to disabledValue))
-                }
-
-                // If unchecked (Belum Lunas), execute Triple Combo Isolir: GET active & DELETE active
-                if (!isChecked) {
-                    val activeUrl = "${baseUrl}active"
-                    val activeResp = mikrotikApi.getActiveSessions(activeUrl, authHeader, customer.name)
-                    if (activeResp.isSuccessful) {
-                        val activeSessions = activeResp.body() ?: emptyList()
+                    if (!isChecked) {
+                        val activeSessions = mikrotikv6SocketApi.getActiveSessions(matchingRouter.ip, matchingRouter.apiPort, matchingRouter.user, matchingRouter.pass, customer.name)
                         val matchSession = activeSessions.find { it.name.equals(customer.name, ignoreCase = true) }
                         if (matchSession != null && matchSession.id.isNotBlank()) {
-                            val deleteUrl = "${baseUrl}active/${matchSession.id}"
-                            mikrotikApi.deleteActiveSession(deleteUrl, authHeader)
+                            mikrotikv6SocketApi.deleteActiveSession(matchingRouter.ip, matchingRouter.apiPort, matchingRouter.user, matchingRouter.pass, matchSession.id)
+                        }
+                    }
+                } else {
+                    val baseUrl = buildMikrotikBaseUrl(matchingRouter.ip, matchingRouter.apiPort)
+                    val authHeader = buildBasicAuth(matchingRouter.user, matchingRouter.pass)
+
+                    val secretUrl = "${baseUrl}secret"
+                    val queryProfile = customer.profile.ifBlank { matchingRouter.targetProfile }.ifBlank { null }
+                    var secretsResp = mikrotikApi.getSecrets(secretUrl, authHeader, queryProfile)
+                    var secrets = if (secretsResp.isSuccessful) secretsResp.body() ?: emptyList() else emptyList()
+
+                    var matchSecret = secrets.find { it.name.equals(customer.name, ignoreCase = true) }
+                    if (matchSecret == null) {
+                        val fallbackResp = mikrotikApi.getSecrets(secretUrl, authHeader, null)
+                        if (fallbackResp.isSuccessful) {
+                            val fallbackSecrets = fallbackResp.body() ?: emptyList()
+                            matchSecret = fallbackSecrets.find { it.name.equals(customer.name, ignoreCase = true) }
+                        }
+                    }
+
+                    val secretId = matchSecret?.id
+                    if (secretId != null) {
+                        val patchUrl = "${baseUrl}secret/$secretId"
+                        val disabledValue = if (isChecked) "false" else "true"
+                        mikrotikApi.patchSecret(patchUrl, authHeader, mapOf("disabled" to disabledValue))
+                    }
+
+                    // If unchecked (Belum Lunas), execute Triple Combo Isolir: GET active & DELETE active
+                    if (!isChecked) {
+                        val activeUrl = "${baseUrl}active"
+                        val activeResp = mikrotikApi.getActiveSessions(activeUrl, authHeader, customer.name)
+                        if (activeResp.isSuccessful) {
+                            val activeSessions = activeResp.body() ?: emptyList()
+                            val matchSession = activeSessions.find { it.name.equals(customer.name, ignoreCase = true) }
+                            if (matchSession != null && matchSession.id.isNotBlank()) {
+                                val deleteUrl = "${baseUrl}active/${matchSession.id}"
+                                mikrotikApi.deleteActiveSession(deleteUrl, authHeader)
+                            }
                         }
                     }
                 }
@@ -293,40 +356,71 @@ class AppRepository(
         }
     }
 
-    suspend fun syncWithMikrotik(currentCustomers: List<CustomerItem>): Result<Int> {
+    suspend fun syncWithMikrotik(currentCustomers: List<CustomerItem>, targetRouterId: String = "ALL"): Result<Int> {
         return try {
             val settings = getUserSettings()
             val session = getUserSession()
             val isAdmin = session.role.uppercase() == "ADMIN"
             val profileToFilter = if (isAdmin) "" else session.assignedProfile.trim().ifBlank { settings.filterProfile.trim() }
 
-            if (!isAdmin && profileToFilter.isBlank()) {
-                return Result.failure(Exception("Profil Wilayah Tugas belum ditentukan untuk akun ini!"))
+            val configuredRouters = getConfiguredRouters()
+            val routers = if (targetRouterId != "ALL" && targetRouterId.isNotBlank()) {
+                configuredRouters.filter { it.id == targetRouterId }
+            } else {
+                configuredRouters
             }
-            if (settings.mikrotikIp.isBlank() || settings.mikrotikUser.isBlank()) {
-                return Result.failure(Exception("IP dan Kredensial MikroTik belum diisi di Pengaturan!"))
+
+            if (routers.isEmpty()) {
+                return Result.failure(Exception("Belum ada router MikroTik terkonfigurasi!\nSilakan tambahkan router terlebih dahulu di menu 🌐 Kelola Router."))
             }
 
-            val baseUrl = buildMikrotikBaseUrl(settings.mikrotikIp)
-            val authHeader = buildBasicAuth(settings.mikrotikUser, settings.mikrotikPass)
-            val secretUrl = "${baseUrl}secret"
+            val allFetchedSecrets = mutableListOf<MikrotikSecret>()
+            val responsiveProfiles = mutableSetOf<String>()
 
-            val queryProfile = if (isAdmin) null else (if (profileToFilter.isBlank()) null else profileToFilter.trim())
-            var secretsResp = mikrotikApi.getSecrets(secretUrl, authHeader, queryProfile)
+            coroutineScope {
+                val deferredList = routers.map { router ->
+                    async {
+                        withTimeoutOrNull(8000) { // Increased to 8 seconds
+                            try {
+                                if (router.version == "v6") {
+                                    val secrets = mikrotikv6SocketApi.getSecrets(router.ip, router.apiPort, router.user, router.pass, if (isAdmin) null else profileToFilter)
+                                    if (secrets.isNotEmpty() && router.targetProfile.isNotBlank()) {
+                                        responsiveProfiles.addAll(router.targetProfile.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() })
+                                    }
+                                    secrets
+                                } else {
+                                    val baseUrl = buildMikrotikBaseUrl(router.ip, router.apiPort)
+                                    val authHeader = buildBasicAuth(router.user, router.pass)
+                                    val secretUrl = "${baseUrl}secret"
 
-            // Fallback if query with profile parameter returned empty list
-            if (secretsResp.isSuccessful && secretsResp.body().orEmpty().isEmpty() && queryProfile != null) {
-                val fallbackResp = mikrotikApi.getSecrets(secretUrl, authHeader, null)
-                if (fallbackResp.isSuccessful && !fallbackResp.body().isNullOrEmpty()) {
-                    secretsResp = fallbackResp
+                                    val queryProfile = if (isAdmin) null else (if (profileToFilter.isBlank()) null else profileToFilter.trim())
+                                    var secretsResp = mikrotikApi.getSecrets(secretUrl, authHeader, queryProfile)
+
+                                    if (secretsResp.isSuccessful && secretsResp.body().orEmpty().isEmpty() && queryProfile != null) {
+                                        val fallbackResp = mikrotikApi.getSecrets(secretUrl, authHeader, null)
+                                        if (fallbackResp.isSuccessful && !fallbackResp.body().isNullOrEmpty()) {
+                                            secretsResp = fallbackResp
+                                        }
+                                    }
+
+                                    if (secretsResp.isSuccessful && secretsResp.body() != null) {
+                                        if (router.targetProfile.isNotBlank()) {
+                                            responsiveProfiles.addAll(router.targetProfile.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() })
+                                        }
+                                        secretsResp.body()!!
+                                    } else emptyList()
+                                }
+                            } catch (e: Exception) {
+                                emptyList()
+                            }
+                        } ?: emptyList()
+                    }
                 }
+                val results = deferredList.awaitAll()
+                results.forEach { allFetchedSecrets.addAll(it) }
             }
 
-            if (!secretsResp.isSuccessful || secretsResp.body() == null) {
-                return Result.failure(Exception("Gagal mengambil data secret MikroTik. HTTP ${secretsResp.code()}"))
-            }
-
-            var mikrotikSecrets = secretsResp.body()!!
+            var mikrotikSecrets = allFetchedSecrets.distinctBy { it.name.trim().lowercase() }
 
             // Filter secrets in Kotlin for non-admin multi-profile matching
             if (!isAdmin && profileToFilter.isNotBlank()) {
@@ -334,25 +428,6 @@ class AppRepository(
                 mikrotikSecrets = mikrotikSecrets.filter { secret ->
                     allowedProfiles.any { p -> (secret.profile ?: "").trim().lowercase() == p }
                 }
-            }
-
-            val mikrotikNameSet = mikrotikSecrets.map { it.name.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
-            val existingNames = currentCustomers.map { it.name.trim().lowercase() }.toSet()
-
-            // 1. Identify new secrets to add
-            val newSecretsToSync = mikrotikSecrets.filter { secret ->
-                secret.name.isNotBlank() && !existingNames.contains(secret.name.trim().lowercase())
-            }
-
-            // 2. Identify deleted secrets to remove (Profile-Isolated Mirror Sync)
-            val targetCustomersInSheets = if (isAdmin) {
-                currentCustomers
-            } else {
-                val allowedProfiles = profileToFilter.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                currentCustomers.filter { cust -> allowedProfiles.any { p -> cust.profile.equals(p, ignoreCase = true) } }
-            }
-            val customersToDelete = targetCustomersInSheets.filter { customer ->
-                customer.name.isNotBlank() && !mikrotikNameSet.contains(customer.name.trim().lowercase())
             }
 
             if (mikrotikSecrets.isNotEmpty()) {
@@ -379,65 +454,160 @@ class AppRepository(
                 firebaseRepository.syncNewCustomers(payloads)
             }
 
-            if (customersToDelete.isNotEmpty()) {
-                val namesToDelete = customersToDelete.map { it.name }
-                firebaseRepository.deleteCustomers(namesToDelete)
+            // Safe Per-Router Mirror Cleanup for responsive router profiles
+            val mikrotikNameSet = mikrotikSecrets.map { it.name.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
+            val targetProfilesToClean = if (responsiveProfiles.isNotEmpty()) responsiveProfiles else (if (isAdmin) emptySet() else profileToFilter.split(",").map { it.trim().lowercase() }.toSet())
+
+            if (targetProfilesToClean.isNotEmpty()) {
+                val customersInResponsiveProfiles = currentCustomers.filter { cust ->
+                    targetProfilesToClean.any { p -> cust.profile.trim().equals(p, ignoreCase = true) }
+                }
+                val customersToDelete = customersInResponsiveProfiles.filter { cust ->
+                    cust.name.isNotBlank() && !mikrotikNameSet.contains(cust.name.trim().lowercase())
+                }
+                if (customersToDelete.isNotEmpty()) {
+                    val namesToDelete = customersToDelete.map { it.name }
+                    firebaseRepository.deleteCustomers(namesToDelete)
+                }
             }
 
-            Result.success(newSecretsToSync.size)
+            Result.success(mikrotikSecrets.size)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    suspend fun executeIsolirMassal(unpaidCustomers: List<CustomerItem>): Result<Int> {
+    suspend fun checkMikrotikSecretDiff(currentCustomers: List<CustomerItem>): Boolean {
         return try {
-            val settings = getUserSettings()
-            if (settings.mikrotikIp.isBlank() || settings.mikrotikUser.isBlank()) {
-                return Result.failure(Exception("IP dan Kredensial MikroTik belum diisi di Pengaturan!"))
+            val routers = getConfiguredRouters()
+            if (routers.isEmpty()) return false
+
+            val session = getUserSession()
+            val isAdmin = session.role.uppercase() == "ADMIN"
+            val profileToFilter = if (isAdmin) "" else session.assignedProfile.trim()
+
+            val allFetchedSecrets = mutableListOf<MikrotikSecret>()
+
+            coroutineScope {
+                val deferredList = routers.map { router ->
+                    async {
+                        withTimeoutOrNull(3000) {
+                            try {
+                                val baseUrl = buildMikrotikBaseUrl(router.ip)
+                                val authHeader = buildBasicAuth(router.user, router.pass)
+                                val secretUrl = "${baseUrl}secret"
+
+                                val queryProfile = if (isAdmin) null else (if (profileToFilter.isBlank()) null else profileToFilter.trim())
+                                var secretsResp = mikrotikApi.getSecrets(secretUrl, authHeader, queryProfile)
+
+                                if (secretsResp.isSuccessful && secretsResp.body().orEmpty().isEmpty() && queryProfile != null) {
+                                    val fallbackResp = mikrotikApi.getSecrets(secretUrl, authHeader, null)
+                                    if (fallbackResp.isSuccessful && !fallbackResp.body().isNullOrEmpty()) {
+                                        secretsResp = fallbackResp
+                                    }
+                                }
+
+                                if (secretsResp.isSuccessful && secretsResp.body() != null) {
+                                    secretsResp.body()!!
+                                } else emptyList()
+                            } catch (e: Exception) {
+                                emptyList()
+                            }
+                        } ?: emptyList()
+                    }
+                }
+                val results = deferredList.awaitAll()
+                results.forEach { allFetchedSecrets.addAll(it) }
             }
 
-            val baseUrl = buildMikrotikBaseUrl(settings.mikrotikIp)
-            val authHeader = buildBasicAuth(settings.mikrotikUser, settings.mikrotikPass)
+            var mikrotikSecrets = allFetchedSecrets.distinctBy { it.name.trim().lowercase() }
+
+            if (!isAdmin && profileToFilter.isNotBlank()) {
+                val allowedProfiles = profileToFilter.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() }
+                mikrotikSecrets = mikrotikSecrets.filter { secret ->
+                    allowedProfiles.any { p -> (secret.profile ?: "").trim().lowercase() == p }
+                }
+            }
+
+            if (mikrotikSecrets.isEmpty()) return false
+
+            val mikrotikNameSet = mikrotikSecrets.map { it.name.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
+            val existingNameSet = currentCustomers.map { it.name.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
+
+            val hasNewSecrets = mikrotikNameSet.any { !existingNameSet.contains(it) }
+            val hasDeletedSecrets = existingNameSet.any { !mikrotikNameSet.contains(it) }
+
+            hasNewSecrets || hasDeletedSecrets
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    suspend fun executeIsolirMassal(unpaidCustomers: List<CustomerItem>): Result<Int> {
+        return try {
+            val routers = getConfiguredRouters()
+            if (routers.isEmpty()) {
+                return Result.failure(Exception("Belum ada router MikroTik terkonfigurasi!"))
+            }
+
             var countSuccess = 0
 
-            val secretUrl = "${baseUrl}secret"
-
             for (customer in unpaidCustomers) {
-                var secretId: String? = null
+                val matchingRouter = routers.find { r ->
+                    r.targetProfile.isNotBlank() && r.targetProfile.split(",").any { p -> customer.profile.contains(p.trim(), ignoreCase = true) }
+                } ?: routers.firstOrNull()
 
-                val queryProfile = customer.profile.ifBlank { settings.filterProfile }.ifBlank { null }
-                val profileResp = mikrotikApi.getSecrets(secretUrl, authHeader, queryProfile)
-                if (profileResp.isSuccessful) {
-                    val profileSecrets = profileResp.body() ?: emptyList()
-                    secretId = profileSecrets.find { it.name.equals(customer.name, ignoreCase = true) }?.id
-                }
+                if (matchingRouter != null && matchingRouter.ip.isNotBlank()) {
+                    if (matchingRouter.version == "v6") {
+                        val secrets = mikrotikv6SocketApi.getSecrets(matchingRouter.ip, matchingRouter.apiPort, matchingRouter.user, matchingRouter.pass, customer.profile)
+                        val matchSecret = secrets.find { it.name.equals(customer.name, ignoreCase = true) }
+                        val secretId = matchSecret?.id ?: customer.name
 
-                if (secretId == null) {
-                    val fallbackResp = mikrotikApi.getSecrets(secretUrl, authHeader, null)
-                    if (fallbackResp.isSuccessful) {
-                        val fallbackSecrets = fallbackResp.body() ?: emptyList()
-                        secretId = fallbackSecrets.find { it.name.equals(customer.name, ignoreCase = true) }?.id
+                        mikrotikv6SocketApi.patchSecret(matchingRouter.ip, matchingRouter.apiPort, matchingRouter.user, matchingRouter.pass, secretId, true)
+
+                        val activeSessions = mikrotikv6SocketApi.getActiveSessions(matchingRouter.ip, matchingRouter.apiPort, matchingRouter.user, matchingRouter.pass, customer.name)
+                        val matchSession = activeSessions.find { it.name.equals(customer.name, ignoreCase = true) }
+                        if (matchSession != null && matchSession.id.isNotBlank()) {
+                            mikrotikv6SocketApi.deleteActiveSession(matchingRouter.ip, matchingRouter.apiPort, matchingRouter.user, matchingRouter.pass, matchSession.id)
+                        }
+                        countSuccess++
+                    } else {
+                        val baseUrl = buildMikrotikBaseUrl(matchingRouter.ip, matchingRouter.apiPort)
+                        val authHeader = buildBasicAuth(matchingRouter.user, matchingRouter.pass)
+
+                        val secretUrl = "${baseUrl}secret"
+                        val queryProfile = customer.profile.ifBlank { matchingRouter.targetProfile }.ifBlank { null }
+                        var secretsResp = mikrotikApi.getSecrets(secretUrl, authHeader, queryProfile)
+                        var secrets = if (secretsResp.isSuccessful) secretsResp.body() ?: emptyList() else emptyList()
+
+                        var matchSecret = secrets.find { it.name.equals(customer.name, ignoreCase = true) }
+                        if (matchSecret == null) {
+                            val fallbackResp = mikrotikApi.getSecrets(secretUrl, authHeader, null)
+                            if (fallbackResp.isSuccessful) {
+                                val fallbackSecrets = fallbackResp.body() ?: emptyList()
+                                matchSecret = fallbackSecrets.find { it.name.equals(customer.name, ignoreCase = true) }
+                            }
+                        }
+
+                        val secretId = matchSecret?.id
+                        if (secretId != null) {
+                            val patchUrl = "${baseUrl}secret/$secretId"
+                            mikrotikApi.patchSecret(patchUrl, authHeader, mapOf("disabled" to "true"))
+                        }
+
+                        val activeUrl = "${baseUrl}active"
+                        val activeResp = mikrotikApi.getActiveSessions(activeUrl, authHeader, customer.name)
+                        if (activeResp.isSuccessful) {
+                            val activeSessions = activeResp.body() ?: emptyList()
+                            val matchSession = activeSessions.find { it.name.equals(customer.name, ignoreCase = true) }
+                            if (matchSession != null && matchSession.id.isNotBlank()) {
+                                val deleteUrl = "${baseUrl}active/${matchSession.id}"
+                                mikrotikApi.deleteActiveSession(deleteUrl, authHeader)
+                            }
+                        }
+                        countSuccess++
                     }
                 }
-
-                if (secretId != null) {
-                    val patchUrl = "${baseUrl}secret/$secretId"
-                    mikrotikApi.patchSecret(patchUrl, authHeader, mapOf("disabled" to "true"))
-                }
-
-                val activeUrl = "${baseUrl}active"
-                val activeResp = mikrotikApi.getActiveSessions(activeUrl, authHeader, customer.name)
-                if (activeResp.isSuccessful) {
-                    val activeSessions = activeResp.body() ?: emptyList()
-                    val matchSession = activeSessions.find { it.name.equals(customer.name, ignoreCase = true) }
-                    if (matchSession != null && matchSession.id.isNotBlank()) {
-                        val deleteUrl = "${baseUrl}active/${matchSession.id}"
-                        mikrotikApi.deleteActiveSession(deleteUrl, authHeader)
-                    }
-                }
-
-                countSuccess++
             }
 
             Result.success(countSuccess)

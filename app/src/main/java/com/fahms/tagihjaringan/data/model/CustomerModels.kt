@@ -6,7 +6,7 @@ import com.google.gson.annotations.JsonAdapter
 import com.google.gson.annotations.SerializedName
 
 /**
- * Data model for Customer record from Google Apps Script Sheets
+ * Data model for Customer record
  */
 data class CustomerItem(
     @SerializedName("rowIndex", alternate = ["id"])
@@ -40,6 +40,35 @@ data class CustomerItem(
 
     @SerializedName("lng")
     val lng: Double = 0.0
+)
+
+/**
+ * Router configuration model for Multi-MikroTik setup
+ */
+data class MikrotikRouter(
+    @SerializedName("id")
+    val id: String = java.util.UUID.randomUUID().toString(),
+
+    @SerializedName("name")
+    val name: String = "",
+
+    @SerializedName("ip")
+    val ip: String = "",
+
+    @SerializedName("user")
+    val user: String = "",
+
+    @SerializedName("pass")
+    val pass: String = "",
+
+    @SerializedName("targetProfile")
+    val targetProfile: String = "",
+
+    @SerializedName("version")
+    val version: String = "v7", // "v7" or "v6"
+
+    @SerializedName("apiPort")
+    val apiPort: Int = 8728
 )
 
 /**
